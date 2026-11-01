@@ -35,10 +35,12 @@ public class Consumidor {
 
         System.out.println("=== CONSUMIDOR OCI QUEUE ===");
 
+        // 1. Perguntar se o consumo deve ser restrito a um canal específico
         System.out.print("Canal para consumir (Enter para consumir de todos os canais): ");
         String canal = scanner.nextLine().trim();
         String channelFilter = canal.isBlank() ? null : canal;
 
+        // 2. Recuperar o OCID da fila
         String queueId = System.getenv("QUEUE_ID");
 
         if (queueId == null || queueId.isBlank()) {
@@ -47,6 +49,7 @@ public class Consumidor {
 
         ObjectMapper mapper = new ObjectMapper();
 
+        // 3. Conectar à fila e ficar consumindo mensagens continuamente
         System.out.println("\nConectando à OCI Queue...");
 
         try (QueueClient cliente = ConexaoOci.conectar()) {
@@ -67,16 +70,20 @@ public class Consumidor {
             String channelFilter,
             ObjectMapper mapper
     ) {
+        // 1. Montar a requisição GetMessages (long polling: aguarda até
+        // POLLING_TIMEOUT_IN_SECONDS por mensagens em vez de retornar vazio na hora)
         GetMessagesRequest.Builder requisicao = GetMessagesRequest.builder()
                 .queueId(queueId)
                 .visibilityInSeconds(VISIBILITY_IN_SECONDS)
                 .timeoutInSeconds(POLLING_TIMEOUT_IN_SECONDS)
                 .limit(MAX_MENSAGENS_POR_CHAMADA);
 
+        // 2. Filtrar por canal, se um foi informado
         if (channelFilter != null) {
             requisicao.channelFilter(channelFilter);
         }
 
+        // 3. Buscar as mensagens disponíveis na fila/canal
         List<GetMessage> mensagens = cliente.getMessages(requisicao.build())
                 .getGetMessages()
                 .getMessages();
@@ -85,6 +92,7 @@ public class Consumidor {
             return;
         }
 
+        // 4. Processar cada mensagem retornada individualmente
         for (GetMessage mensagem : mensagens) {
             processarMensagem(cliente, queueId, mensagem, mapper);
         }
@@ -101,14 +109,18 @@ public class Consumidor {
                 : null;
 
         try {
+            // 1. Converter o conteúdo (JSON) da mensagem de volta para objeto Java
             MensagemEmail email = mapper.readValue(mensagem.getContent(), MensagemEmail.class);
 
             System.out.println("Processando mensagem " + mensagem.getId() +
                     (canalOrigem != null ? " (canal: " + canalOrigem + ")" : "") +
                     " - tentativa " + mensagem.getDeliveryCount());
 
+            // 2. Tentar processar a mensagem (disparar o e-mail)
             EnviadorEmail.enviar(email);
 
+            // 3. Deu certo: remover a mensagem da fila para que não seja
+            // entregue novamente a outro consumidor
             excluirMensagem(cliente, queueId, mensagem);
 
             System.out.println("Mensagem " + mensagem.getId() + " processada e removida da fila.\n");
@@ -118,6 +130,9 @@ public class Consumidor {
             System.out.println("Falha ao processar mensagem " + mensagem.getId() +
                     ": " + e.getMessage());
 
+            // 4. Deu errado: devolver a mensagem à fila para uma nova tentativa.
+            // Se o "Máximo de tentativas de entrega" configurado na fila for
+            // atingido, a própria OCI move a mensagem para a DLQ automaticamente.
             devolverParaFila(cliente, queueId, mensagem);
 
             System.out.println("Mensagem " + mensagem.getId() +
